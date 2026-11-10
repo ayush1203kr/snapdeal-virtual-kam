@@ -2,6 +2,11 @@
 
 A standalone, voice-first Mini AI Virtual Key Account Manager (KAM) prototype for a marketplace seller whose sales have declined. It turns seller metrics into an evidence-led diagnosis, asks focused questions, builds a prioritized recovery plan, records seller-approved commitments and supports a follow-up check-in.
 
+## Submission Links
+
+- **Demo Video:** https://drive.google.com/file/d/1oQ9KwE81vhtn4b_wk-6lEL99dUmWbJDU/view?usp=sharing
+- **Technical Note:** [TECH_NOTE.md](./TECH_NOTE.md)
+- **Demo Script:** [DEMO_SCRIPT.md](./DEMO_SCRIPT.md)
 > **Prototype disclaimer:** This is an independent take-home concept demo. It is not an official Snapdeal product, is not connected to Snapdeal production systems, and uses synthetic seller data. It does not change listings, inventory, prices, advertising, orders or seller account settings.
 
 ## Assignment outcomes covered
