@@ -103,6 +103,96 @@ function fallbackReply(text: string, analysis: ReturnType<typeof analyzeSeller>,
   };
 }
 
+
+// Deterministic handling for important seller intents. This prevents repeated
+// generic clarification questions and uses the actual seller snapshot.
+function getGuidedSellerReply(text: string, seller: any, analysis: ReturnType<typeof analyzeSeller>) {
+  const lower = text.toLowerCase();
+  const products = Array.isArray(seller?.products) ? [...seller.products] : [];
+
+  // Product-level questions
+  const productQuestion = /\b(which|what|show|list|identify|top|highest|most)\b.{0,80}\b(products?|skus?|items?|views?|stock)\b|\b(products?|skus?)\b.{0,80}\b(contribut|sales decline|most views|zero stock|low stock)\b/i.test(lower);
+
+  if (productQuestion) {
+    const top = products
+      .sort((a, b) => Number(b.views || 0) - Number(a.views || 0))
+      .slice(0, 3);
+
+    const details = top.map(p => {
+      const stock = Number(p.stock || 0);
+      const status = stock <= 0 ? "out of stock" : stock <= 10 ? "low stock" : "in stock";
+      return `${p.name}: ${p.views || 0} views, ${p.orders || 0} orders, ${stock} units (${status})`;
+    });
+
+    return {
+      intent: "diagnose" as const,
+      reply: details.length
+        ? "Here are your highest-view products: " + details.join("; ") +
+          ". Kitchen-level SKU comparisons with the previous month are not available in this demo, so I cannot attribute the entire sales decline to individual products. However, high-view products with low or zero stock deserve immediate attention."
+        : "I do not have product-level records in this seller snapshot. Please check product views, orders and available stock in your seller panel.",
+      followUpQuestion: "Shall we start with the highest-view product that has a stock issue?"
+    };
+  }
+
+  // Conversion problem: shoppers visit but do not order
+  const conversionProblem =
+    /(visiting|visits|traffic|shoppers?|customers?|visitors?).{0,90}(not placing|not converting|no orders|aren't ordering|are not ordering|don't order|do not order)|\b(conversion|converting)\b/i.test(lower);
+
+  if (conversionProblem) {
+    const currentConversion = analysis.current.conversionRate;
+    const previousConversion = analysis.previous.visits > 0
+      ? analysis.previous.orders / analysis.previous.visits * 100
+      : 0;
+
+    const product = analysis.unavailableProducts[0];
+    const stockDetail = product
+      ? ` ${product.name} has ${product.stock} units and ${product.views} views (${product.availability}).`
+      : "";
+
+    return {
+      intent: "diagnose" as const,
+      reply: `Understood. This is primarily a conversion problem, not just a traffic problem. Your conversion rate is ${currentConversion.toFixed(2)}%, compared with ${previousConversion.toFixed(2)}% previously. That is a decline of ${analysis.changes.conversionPoints.toFixed(2)} percentage points. Catalogue availability is ${analysis.current.inStockPct}% and cancellations are ${analysis.current.cancellationPct}%.${stockDetail} First fix availability on high-view products. Then review pricing, listing images, product details and delivery promises. Are buyers objecting mainly to price, delivery or product information?`,
+      followUpQuestion: "Are buyers objecting mainly to price, delivery or product information?"
+    };
+  }
+
+  // Prioritized action plan
+  if (/\b(plan|recommend|what should|next steps|prioriti[sz]|actions?|recover|improve sales|increase conversion)\b/i.test(lower)) {
+    const actions = [...analysis.actions]
+      .sort((a, b) => {
+        const rank = (p: string) => p === "urgent" ? 0 : p === "high" ? 1 : 2;
+        return rank(a.priority) - rank(b.priority);
+      })
+      .slice(0, 3);
+
+    const actionDetails = actions.map((a, i) =>
+      `${i + 1}. ${a.title}. First step: ${a.firstStep} Owner: ${a.owner}. Timeline: ${a.timeline}. Success measure: ${a.successMetric}.`
+    ).join(" ");
+
+    const followUp = /\b(follow.?up|check.?in|remind|tomorrow)\b/i.test(lower)
+      ? " I can keep your agreed action visible in the in-app follow-up list, but this demo does not send automatic notifications. Open the app tomorrow and use Check in."
+      : "";
+
+    return {
+      intent: "recommend" as const,
+      reply: actions.length
+        ? `Here is your prioritized recovery plan. ${actionDetails}${followUp} Which action will you take first, and by what date?`
+        : "Your current snapshot does not show a major negative signal. Let's inspect your top products and recent buyer feedback first.",
+      followUpQuestion: "Which action will you take first, and by what date?"
+    };
+  }
+
+  // Follow-up request without an explicit action
+  if (/\b(follow.?up|check.?in|remind)\b/i.test(lower)) {
+    return {
+      intent: "general" as const,
+      reply: "I can support a follow-up using the in-app Check in button once we have a saved commitment. This demo does not send automatic reminders. What specific action will you take, and by what date?",
+      followUpQuestion: "What action will you take, and by what date?"
+    };
+  }
+
+  return null;
+}
 export async function runVirtualKam({ seller, messages, userMessage }: {
   seller: any;
   messages: Array<{ role: string; content: string }>;
@@ -110,6 +200,17 @@ export async function runVirtualKam({ seller, messages, userMessage }: {
 }): Promise<AgentResult> {
   const analysis = analyzeSeller(seller);
   const explicitCommitment = extractSellerCommitment(userMessage);
+
+  if (!explicitCommitment) {
+    const guided = getGuidedSellerReply(userMessage, seller, analysis);
+    if (guided) {
+      return {
+        ...guided,
+        analysis,
+        provider: "deterministic-fallback"
+      };
+    }
+  }
 
   if (!process.env.GEMINI_API_KEY) {
     const response = fallbackReply(userMessage, analysis, messages);
