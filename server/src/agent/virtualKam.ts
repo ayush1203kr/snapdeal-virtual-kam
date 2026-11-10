@@ -110,7 +110,55 @@ function getGuidedSellerReply(text: string, seller: any, analysis: ReturnType<ty
   const lower = text.toLowerCase();
   const products = Array.isArray(seller?.products) ? [...seller.products] : [];
 
-  // Product-level questions
+  // Handle specific prioritisation requests BEFORE broad product questions.
+  // This prevents "which product should I prioritise/prepare?" from being
+  // treated as another request to repeat the product list.
+  const prioritizationQuestion =
+    /\b(prioriti[sz]e|prepare|prepared|preparing|restock|replenish|focus on|which one first|which product first)\b/i.test(lower) ||
+    /\bwhich\b.{0,50}\b(product|sku|item)\b.{0,45}\b(first|priorit|prepar|restock)\b/i.test(lower);
+
+  if (prioritizationQuestion) {
+    const ranked = [...products].sort((a, b) => {
+      const priorityScore = (product: any) => {
+        const stock = Number(product.stock ?? 0);
+        const views = Number(product.views ?? 0);
+        const orders = Number(product.orders ?? 0);
+
+        // Stock risk comes first; customer interest breaks ties.
+        const stockRisk = stock <= 0 ? 1_000_000 : stock <= 10 ? 500_000 : 0;
+        return stockRisk + views - orders * 10;
+      };
+
+      return priorityScore(b) - priorityScore(a);
+    });
+
+    const first = ranked[0];
+    const nextLowStock = ranked.find(
+      product => product !== first && Number(product.stock ?? 0) <= 10
+    );
+
+    if (first) {
+      const stock = Number(first.stock ?? 0);
+      const stockStatus = stock <= 0 ? "out of stock" : "low on stock";
+      const nextStep = stock <= 0
+        ? "Restock it before spending more on advertising or discounts."
+        : "Replenish it soon and monitor whether orders recover.";
+
+      return {
+        intent: "recommend" as const,
+        reply: `Prioritise ${first.name} first. It has ${Number(first.views ?? 0).toLocaleString("en-IN")} views but only ${stock} units available, so it is ${stockStatus}. ${nextStep}${nextLowStock ? ` After that, replenish ${nextLowStock.name}, which has ${Number(nextLowStock.stock ?? 0)} units remaining and ${Number(nextLowStock.views ?? 0).toLocaleString("en-IN")} views.` : ""} Can you confirm when you can replenish ${first.name}?`,
+        followUpQuestion: `When can you replenish ${first.name}?`
+      };
+    }
+
+    return {
+      intent: "clarify" as const,
+      reply: "I do not have product-level stock records in this snapshot, so I cannot safely choose a product. Please share the available stock for your highest-view products.",
+      followUpQuestion: "Which high-view product has the lowest available stock?"
+    };
+  }
+
+  // Generic product-level questions (for example, "which products have most views?")
   const productQuestion = /\b(which|what|show|list|identify|top|highest|most)\b.{0,80}\b(products?|skus?|items?|views?|stock)\b|\b(products?|skus?)\b.{0,80}\b(contribut|sales decline|most views|zero stock|low stock)\b/i.test(lower);
 
   if (productQuestion) {
@@ -128,7 +176,7 @@ function getGuidedSellerReply(text: string, seller: any, analysis: ReturnType<ty
       intent: "diagnose" as const,
       reply: details.length
         ? "Here are your highest-view products: " + details.join("; ") +
-          ". Kitchen-level SKU comparisons with the previous month are not available in this demo, so I cannot attribute the entire sales decline to individual products. However, high-view products with low or zero stock deserve immediate attention."
+          ". SKU-level comparisons with the previous month are not available in this demo, so I cannot attribute the entire sales decline to individual products. However, high-view products with low or zero stock deserve immediate attention."
         : "I do not have product-level records in this seller snapshot. Please check product views, orders and available stock in your seller panel.",
       followUpQuestion: "Shall we start with the highest-view product that has a stock issue?"
     };
