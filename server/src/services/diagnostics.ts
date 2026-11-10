@@ -1,4 +1,4 @@
-type MetricSnapshot = {
+﻿type MetricSnapshot = {
   visits: number;
   orders: number;
   revenue: number;
@@ -32,6 +32,7 @@ const formatChange = (value: number | null) =>
 export function analyzeSeller(seller: any) {
   const previous = seller?.metrics?.previous ?? {};
   const current = seller?.metrics?.current ?? {};
+  const hasCurrentStockMetric = current.inStockPct !== undefined && current.inStockPct !== null && current.inStockPct !== "";
   const p = {
     visits: safeNumber(previous.visits),
     orders: safeNumber(previous.orders),
@@ -93,7 +94,7 @@ export function analyzeSeller(seller: any) {
     });
   }
 
-  if (c.inStockPct < 90) {
+  if (hasCurrentStockMetric && c.inStockPct < 90) {
     signals.push({
       key: "stock",
       title: "Product availability is restricting order capture",
@@ -134,7 +135,7 @@ export function analyzeSeller(seller: any) {
   }
 
   const actions: any[] = [];
-  if (stockRiskProducts.length || c.inStockPct < 90) {
+  if (stockRiskProducts.length || (hasCurrentStockMetric && c.inStockPct < 90)) {
     const productNames = stockRiskProducts.slice(0, 3).map(x => `${x.name} (${safeNumber(x.stock)} units)`);
     actions.push({
       id: "availability",
@@ -208,7 +209,7 @@ export function analyzeSeller(seller: any) {
   const score = Math.max(0, Math.min(100, Math.round(
     100
     - Math.max(0, -(changes.revenue ?? 0)) * 0.25
-    - Math.max(0, 90 - c.inStockPct) * 0.5
+    - (hasCurrentStockMetric ? Math.max(0, 90 - c.inStockPct) * 0.5 : 0)
     - Math.max(0, c.cancellationPct - 3) * 1.8
     - Math.max(0, 4.5 - c.rating) * 10
     - Math.max(0, c.returnPct - 5) * 2
@@ -251,3 +252,4 @@ export function analyzeSeller(seller: any) {
     healthScoreNote: "A directional demo heuristic based on sales movement, availability, cancellations, ratings and returns; not an official marketplace score."
   };
 }
+
