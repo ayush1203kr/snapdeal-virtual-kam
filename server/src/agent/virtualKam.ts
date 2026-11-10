@@ -106,7 +106,12 @@ function fallbackReply(text: string, analysis: ReturnType<typeof analyzeSeller>,
 
 // Deterministic handling for important seller intents. This prevents repeated
 // generic clarification questions and uses the actual seller snapshot.
-function getGuidedSellerReply(text: string, seller: any, analysis: ReturnType<typeof analyzeSeller>) {
+function getGuidedSellerReply(
+  text: string,
+  seller: any,
+  analysis: ReturnType<typeof analyzeSeller>,
+  history: Array<{ role: string; content: string }>
+) {
   const lower = text.toLowerCase();
   const products = Array.isArray(seller?.products) ? [...seller.products] : [];
 
@@ -116,6 +121,32 @@ function getGuidedSellerReply(text: string, seller: any, analysis: ReturnType<ty
   const prioritizationQuestion =
     /\b(prioriti[sz]e|prepare|prepared|preparing|practi[cs]e|practicing|restock|replenish|focus on|which one first|which product first)\b/i.test(lower) ||
     /\bwhich\b.{0,50}\b(product|sku|item)\b.{0,45}\b(first|priorit|prepar|practi|restock)\b/i.test(lower);
+
+  // If this conversation already contains a saved commitment, acknowledge it
+  // instead of asking the seller to confirm the same replenishment again.
+  const savedCommitmentMessage = [...history].reverse().find(message =>
+    message.role === "assistant" && /I have recorded your commitment:/i.test(message.content)
+  )?.content || "";
+  const savedCommitmentMatch = savedCommitmentMessage.match(
+    /I have recorded your commitment:\s*(.+?),\s*due\s+(.+?)\./i
+  );
+
+  if (prioritizationQuestion && savedCommitmentMatch) {
+    const committedAction = savedCommitmentMatch[1].trim();
+    const committedDate = savedCommitmentMatch[2].trim();
+    const committedProduct = products.find(product =>
+      committedAction.toLowerCase().includes(String(product.name || "").toLowerCase())
+    );
+    const nextProduct = products
+      .filter(product => product !== committedProduct && Number(product.stock ?? 0) > 0 && Number(product.stock ?? 0) <= 10)
+      .sort((a, b) => Number(a.stock ?? 0) - Number(b.stock ?? 0))[0];
+
+    return {
+      intent: "recommend" as const,
+      reply: `No problem—take care of your personal work. Your commitment to ${committedAction.toLowerCase()} is already recorded for ${committedDate}. ${nextProduct ? `After that, prepare ${nextProduct.name}; it has ${Number(nextProduct.stock ?? 0)} units left and ${Number(nextProduct.views ?? 0).toLocaleString("en-IN")} views.` : "Once that is done, we can review the remaining products and their stock."} You do not need to confirm the same commitment again.`,
+      followUpQuestion: nextProduct ? `Would you like to plan replenishment for ${nextProduct.name}?` : "Would you like to review the remaining products?"
+    };
+  }
 
   if (prioritizationQuestion) {
     const ranked = [...products].sort((a, b) => {
@@ -300,7 +331,7 @@ export async function runVirtualKam({ seller, messages, userMessage }: {
     extractContextualReplenishmentCommitment(userMessage, messages);
 
   if (!explicitCommitment) {
-    const guided = getGuidedSellerReply(userMessage, seller, analysis);
+    const guided = getGuidedSellerReply(userMessage, seller, analysis, messages);
     if (guided) {
       return {
         ...guided,
