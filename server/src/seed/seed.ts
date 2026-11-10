@@ -1,0 +1,1 @@
+import"dotenv/config";import mongoose from"mongoose";import{ensureDemoSeller}from"./seedData.ts";await mongoose.connect(process.env.MONGODB_URI);const seller=await ensureDemoSeller();process.stdout.write(`Seed ready: ${seller.name}\n`);await mongoose.disconnect();
