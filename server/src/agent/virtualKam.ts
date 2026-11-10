@@ -114,8 +114,8 @@ function getGuidedSellerReply(text: string, seller: any, analysis: ReturnType<ty
   // This prevents "which product should I prioritise/prepare?" from being
   // treated as another request to repeat the product list.
   const prioritizationQuestion =
-    /\b(prioriti[sz]e|prepare|prepared|preparing|restock|replenish|focus on|which one first|which product first)\b/i.test(lower) ||
-    /\bwhich\b.{0,50}\b(product|sku|item)\b.{0,45}\b(first|priorit|prepar|restock)\b/i.test(lower);
+    /\b(prioriti[sz]e|prepare|prepared|preparing|practi[cs]e|practicing|restock|replenish|focus on|which one first|which product first)\b/i.test(lower) ||
+    /\bwhich\b.{0,50}\b(product|sku|item)\b.{0,45}\b(first|priorit|prepar|practi|restock)\b/i.test(lower);
 
   if (prioritizationQuestion) {
     const ranked = [...products].sort((a, b) => {
@@ -241,13 +241,63 @@ function getGuidedSellerReply(text: string, seller: any, analysis: ReturnType<ty
 
   return null;
 }
+
+
+// Interpret a short time-only answer in the context of the previous replenishment
+// question, so "after 1 month" is not mistaken for a new sales-diagnosis request.
+function extractContextualReplenishmentCommitment(
+  userMessage: string,
+  messages: Array<{ role: string; content: string }>
+) {
+  const timingAnswer = userMessage.trim();
+  const isOneMonth =
+    /^(?:(?:after|in)\s+(?:1|one|a)\s+month|next\s+month)(?:\s+from\s+now)?[.! ]*$/i.test(timingAnswer);
+
+  if (!isOneMonth) return null;
+
+  const latestAssistant = [...messages]
+    .reverse()
+    .find(message => message.role === "assistant")
+    ?.content || "";
+
+  const questionMatch = latestAssistant.match(
+    /when (?:can you|you can) (?:replenish|restock)\s+(.+?)[?.!]*$/i
+  ) || latestAssistant.match(
+    /when will you (?:replenish|restock)\s+(.+?)[?.!]*$/i
+  );
+
+  if (!questionMatch?.[1]) return null;
+
+  const productName = questionMatch[1].trim();
+  const dueDate = new Date();
+  const originalDay = dueDate.getDate();
+
+  // Add one calendar month without overflowing dates such as the 31st.
+  dueDate.setDate(1);
+  dueDate.setMonth(dueDate.getMonth() + 1);
+  const lastDayOfTargetMonth = new Date(
+    dueDate.getFullYear(),
+    dueDate.getMonth() + 1,
+    0
+  ).getDate();
+  dueDate.setDate(Math.min(originalDay, lastDayOfTargetMonth));
+  dueDate.setHours(17, 0, 0, 0);
+
+  return {
+    action: `Replenish ${productName}`,
+    dueDate: dueDate.toISOString()
+  };
+}
+
 export async function runVirtualKam({ seller, messages, userMessage }: {
   seller: any;
   messages: Array<{ role: string; content: string }>;
   userMessage: string;
 }): Promise<AgentResult> {
   const analysis = analyzeSeller(seller);
-  const explicitCommitment = extractSellerCommitment(userMessage);
+  const explicitCommitment =
+    extractSellerCommitment(userMessage) ||
+    extractContextualReplenishmentCommitment(userMessage, messages);
 
   if (!explicitCommitment) {
     const guided = getGuidedSellerReply(userMessage, seller, analysis);
