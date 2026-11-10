@@ -1,1 +1,53 @@
-import mongoose from "mongoose";const product=new mongoose.Schema({name:{type:String,required:true},sku:String,stock:{type:Number,default:0},views:Number,orders:Number,price:Number,rating:Number},{_id:false});const seller=new mongoose.Schema({name:{type:String,required:true},contactName:String,category:String,location:String,demo:Boolean,metrics:{previous:{visits:Number,orders:Number,revenue:Number,inStockPct:Number,cancellationPct:Number,rating:Number,returnPct:Number},current:{visits:Number,orders:Number,revenue:Number,inStockPct:Number,cancellationPct:Number,rating:Number,returnPct:Number}},products:[product]},{timestamps:true});const message=new mongoose.Schema({role:{type:String,enum:["user","assistant"]},content:String,createdAt:{type:Date,default:Date.now}});const conversation=new mongoose.Schema({sellerId:{type:mongoose.Schema.Types.ObjectId,ref:"Seller"},status:{type:String,default:"active"},messages:[message]},{timestamps:true});const commitment=new mongoose.Schema({sellerId:{type:mongoose.Schema.Types.ObjectId,ref:"Seller",required:true},conversationId:{type:mongoose.Schema.Types.ObjectId,ref:"Conversation"},action:{type:String,required:true},dueDate:{type:Date,required:true},owner:{type:String,default:"Seller"},status:{type:String,default:"open"},confirmedBySeller:{type:Boolean,default:false}},{timestamps:true});export const SellerModel=mongoose.models.Seller||mongoose.model("Seller",seller);export const ConversationModel=mongoose.models.Conversation||mongoose.model("Conversation",conversation);export const CommitmentModel=mongoose.models.Commitment||mongoose.model("Commitment",commitment);
+import mongoose from "mongoose";
+
+const productSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  sku: String,
+  stock: { type: Number, default: 0 },
+  views: Number,
+  orders: Number,
+  price: Number,
+  rating: Number
+}, { _id: false });
+
+const sellerSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  contactName: String,
+  category: String,
+  location: String,
+  demo: Boolean,
+  metrics: {
+    previous: { visits: Number, orders: Number, revenue: Number, inStockPct: Number, cancellationPct: Number, rating: Number, returnPct: Number },
+    current: { visits: Number, orders: Number, revenue: Number, inStockPct: Number, cancellationPct: Number, rating: Number, returnPct: Number }
+  },
+  products: [productSchema]
+}, { timestamps: true });
+
+const messageSchema = new mongoose.Schema({
+  role: { type: String, enum: ["user", "assistant"], required: true },
+  content: { type: String, required: true },
+  createdAt: { type: Date, default: Date.now }
+});
+
+const conversationSchema = new mongoose.Schema({
+  sellerId: { type: mongoose.Schema.Types.ObjectId, ref: "Seller", required: true },
+  status: { type: String, enum: ["active", "closed"], default: "active" },
+  messages: [messageSchema]
+}, { timestamps: true });
+
+const commitmentSchema = new mongoose.Schema({
+  sellerId: { type: mongoose.Schema.Types.ObjectId, ref: "Seller", required: true },
+  conversationId: { type: mongoose.Schema.Types.ObjectId, ref: "Conversation" },
+  action: { type: String, required: true, maxlength: 180 },
+  dueDate: { type: Date, required: true },
+  followUpAt: { type: Date, required: true },
+  lastFollowUpAt: Date,
+  owner: { type: String, default: "Seller" },
+  status: { type: String, enum: ["open", "completed", "blocked"], default: "open" },
+  sellerNote: { type: String, maxlength: 500 },
+  confirmedBySeller: { type: Boolean, default: false }
+}, { timestamps: true });
+
+export const SellerModel = mongoose.models.Seller || mongoose.model("Seller", sellerSchema);
+export const ConversationModel = mongoose.models.Conversation || mongoose.model("Conversation", conversationSchema);
+export const CommitmentModel = mongoose.models.Commitment || mongoose.model("Commitment", commitmentSchema);

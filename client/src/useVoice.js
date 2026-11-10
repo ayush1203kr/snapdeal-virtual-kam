@@ -1,1 +1,69 @@
-import{useCallback,useEffect,useRef,useState}from"react";export function useVoice(onTranscript){const ref=useRef(null);const[supported,setSupported]=useState(false);const[listening,setListening]=useState(false);const[enabled,setEnabled]=useState(true);useEffect(()=>{const SR=window.SpeechRecognition||window.webkitSpeechRecognition;if(!SR)return;setSupported(true);const r=new SR();r.lang="en-IN";r.interimResults=false;r.continuous=false;r.onresult=e=>{const t=e.results?.[0]?.[0]?.transcript?.trim();if(t)onTranscript(t)};r.onend=()=>setListening(false);r.onerror=()=>setListening(false);ref.current=r;return()=>r.abort()},[onTranscript]);const start=useCallback(()=>{try{ref.current?.start();setListening(true)}catch{setListening(false)}},[]);const stop=useCallback(()=>{ref.current?.stop();setListening(false)},[]);const speak=useCallback(t=>{if(!enabled||!window.speechSynthesis)return;window.speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(t);u.lang="en-IN";window.speechSynthesis.speak(u)},[enabled]);return{supported,listening,start,stop,speak,enabled,setEnabled}}
+import { useCallback, useEffect, useRef, useState } from "react";
+
+export function useVoice(onTranscript) {
+  const [supported, setSupported] = useState(false);
+  const [listening, setListening] = useState(false);
+  const [enabled, setEnabled] = useState(true);
+  const recognitionRef = useRef(null);
+  const transcriptHandlerRef = useRef(onTranscript);
+  const enabledRef = useRef(enabled);
+
+  useEffect(() => {
+    transcriptHandlerRef.current = onTranscript;
+  }, [onTranscript]);
+
+  useEffect(() => {
+    enabledRef.current = enabled;
+  }, [enabled]);
+
+  useEffect(() => {
+    const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!Recognition) return undefined;
+
+    const recognition = new Recognition();
+    recognition.lang = "en-IN";
+    recognition.interimResults = false;
+    recognition.continuous = false;
+    recognition.maxAlternatives = 1;
+    recognition.onresult = event => {
+      const transcript = event.results?.[0]?.[0]?.transcript?.trim();
+      if (transcript) transcriptHandlerRef.current(transcript);
+    };
+    recognition.onend = () => setListening(false);
+    recognition.onerror = () => setListening(false);
+    recognitionRef.current = recognition;
+    setSupported(true);
+
+    return () => {
+      recognition.abort();
+      recognitionRef.current = null;
+    };
+  }, []);
+
+  const start = useCallback(() => {
+    if (!recognitionRef.current) return;
+    try {
+      recognitionRef.current.start();
+      setListening(true);
+    } catch {
+      setListening(false);
+    }
+  }, []);
+
+  const stop = useCallback(() => {
+    recognitionRef.current?.stop();
+    setListening(false);
+  }, []);
+
+  const speak = useCallback(text => {
+    if (!enabledRef.current || !window.speechSynthesis || !text) return;
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = "en-IN";
+    utterance.rate = 1;
+    utterance.pitch = 1;
+    window.speechSynthesis.speak(utterance);
+  }, []);
+
+  return { supported, listening, start, stop, speak, enabled, setEnabled };
+}

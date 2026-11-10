@@ -1,1 +1,193 @@
-import{ChatGoogleGenerativeAI}from"@langchain/google-genai";import{ChatPromptTemplate,MessagesPlaceholder}from"@langchain/core/prompts";import{HumanMessage,AIMessage}from"@langchain/core/messages";import{z}from"zod";import{analyzeSeller}from"../services/diagnostics.ts";const schema=z.object({reply:z.string(),intent:z.enum(["diagnose","clarify","recommend","commitment","general"]),followUpQuestion:z.string().optional(),commitment:z.object({action:z.string(),dueDate:z.string(),confirmed:z.boolean()}).optional()});const system=`You are an empathetic, practical seller success manager for an Indian ecommerce marketplace. Own the sales-decline issue from diagnosis through an agreed action and follow-up. Use only the seller metrics and diagnosis provided. Never invent metrics, policies, competitor facts, or claim that you changed listings, prices, ads, or stock. Ask one focused question when the cause is uncertain. Explain traffic, conversion, availability, cancellations, ratings and returns simply. Prioritize actions by impact and urgency. Avoid recommending discounts blindly. Record a commitment only if the seller explicitly agrees and supplies an unambiguous future date. Keep replies concise and suitable for speech. Return structured output.`;export async function runVirtualKam({seller,messages,userMessage}){const analysis=analyzeSeller(seller);if(!process.env.GEMINI_API_KEY)return{...fallback(userMessage,analysis),analysis,provider:"deterministic-fallback"};try{const model=new ChatGoogleGenerativeAI({apiKey:process.env.GEMINI_API_KEY,model:process.env.GEMINI_MODEL||"gemini-2.5-flash",temperature:.2,maxOutputTokens:450}).withStructuredOutput(schema);const prompt=ChatPromptTemplate.fromMessages([["system",system],["system","Seller data and computed diagnosis: {context}"],new MessagesPlaceholder("history"),["human","{input}"]]);const history=messages.slice(-10).map(m=>m.role==="assistant"?new AIMessage(m.content):new HumanMessage(m.content));const result=await prompt.pipe(model).invoke({context:JSON.stringify({seller:seller.name,previous:analysis.previous,current:analysis.current,signals:analysis.signals,actions:analysis.actions}),history,input:userMessage});return{...result,analysis,provider:"langchain-gemini"}}catch{return{...fallback(userMessage,analysis),analysis,provider:"deterministic-fallback",warning:"LLM unavailable; deterministic fallback used"}}}function fallback(text,a){const t=text.toLowerCase();const commitmentMatch=text.match(/(?:i will|i'll)\s+(.+?)\s+by\s+(tomorrow|\d{4}-\d{2}-\d{2})[.!]?$/i);if(commitmentMatch){const due=new Date();if(commitmentMatch[2].toLowerCase()==="tomorrow")due.setDate(due.getDate()+1);else{const parsed=new Date(`${commitmentMatch[2]}T12:00:00`);if(!Number.isNaN(parsed.getTime()))due.setTime(parsed.getTime())}if(due>new Date())return{intent:"commitment",reply:`I have recorded your commitment: ${commitmentMatch[1].trim()} by ${due.toLocaleDateString("en-IN")}. I will keep it visible in your follow-up list.`,commitment:{action:commitmentMatch[1].trim(),dueDate:due.toISOString(),confirmed:true}}}if(/plan|recommend|what should|help/.test(t))return{intent:"recommend",reply:`The main signals are ${a.signals.slice(0,2).map(x=>x.title.toLowerCase()).join(" and ")}. Start with ${a.actions[0]?.title.toLowerCase()||"reviewing your top products"}. Next, ${a.actions[1]?.title.toLowerCase()||"check your best-performing listings"}. Which can you take first?`,followUpQuestion:"Which action can you commit to first?"};if(/why|reason|sales dropped/.test(t))return{intent:"diagnose",reply:`Revenue is ${a.changes.revenueLabel}. I can see ${a.signals.slice(0,2).map(x=>x.title.toLowerCase()).join(" and ")}. Are your top-selling products available in the quantities shown in your seller panel?`,followUpQuestion:"Are your top-selling products available in the listed quantity?"};return{intent:"clarify",reply:"Let's narrow this down. Are fewer customers visiting your products, or are customers visiting but not placing orders?",followUpQuestion:"Is the main issue traffic or conversion?"}}
+import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
+import { AIMessage, HumanMessage } from "@langchain/core/messages";
+import { ChatPromptTemplate, MessagesPlaceholder } from "@langchain/core/prompts";
+import { z } from "zod";
+import { analyzeSeller } from "../services/diagnostics.ts";
+import { extractSellerCommitment } from "./commitmentParser.ts";
+
+const responseSchema = z.object({
+  reply: z.string(),
+  intent: z.enum(["diagnose", "clarify", "recommend", "commitment", "general"]),
+  followUpQuestion: z.string().optional()
+});
+
+type AgentResult = {
+  reply: string;
+  intent: "diagnose" | "clarify" | "recommend" | "commitment" | "general";
+  followUpQuestion?: string;
+  commitment?: { action: string; dueDate: string; confirmed: boolean };
+  analysis: ReturnType<typeof analyzeSeller>;
+  provider: string;
+  warning?: string;
+};
+
+const systemPrompt = `You are an empathetic, commercially sharp seller success manager for an Indian ecommerce marketplace. You own the seller's sales-decline problem from diagnosis through action and follow-up.
+
+Operating rules:
+- Use only the seller metrics, product facts and computed diagnosis in the context. Never invent numbers, platform policies, competitor facts or causes.
+- Start with the strongest evidence. Distinguish traffic, conversion, availability, cancellations, average order value, ratings and returns.
+- Explain percentage change in plain language. Do not confuse percentage change with percentage-point change.
+- Ask one focused question at a time. Ask about the most important unknown that would change the action plan.
+- Recommend actions in priority order with a first step, owner, timeline and measurable outcome.
+- Protect seller margin. Never recommend blanket discounts or more advertising before checking stock, listing quality and fulfilment readiness.
+- Do not claim to have changed inventory, listings, prices, campaigns, orders or account settings.
+- Do not claim a commitment has been recorded. The application records one only when the seller explicitly states an action and a clear future due date.
+- Keep the spoken reply concise, warm and natural in Indian English. Avoid jargon and long lists.
+- End with one useful question or a clear next step when appropriate.`;
+
+
+function fallbackReply(text: string, analysis: ReturnType<typeof analyzeSeller>, history: Array<{ role: string; content: string }>) {
+  const lower = text.toLowerCase();
+  const latestAssistant = [...history].reverse().find(message => message.role === "assistant")?.content.toLowerCase() || "";
+  const topSignals = analysis.signals.slice(0, 2).map(signal => signal.title.toLowerCase());
+
+  if (/\b(plan|recommend|what should|next steps|7 day|seven day)\b/.test(lower)) {
+    const first = analysis.actions[0];
+    const second = analysis.actions[1];
+    return {
+      intent: "recommend" as const,
+      reply: first
+        ? `I would start with ${first.title.toLowerCase()}. ${first.firstStep} ${second ? `After that, ${second.firstStep}` : "Then we can review the result against your sales and fulfilment metrics."} Which of these can you take ownership of first?`
+        : "Your current metrics do not show a major negative signal. Let's review your top products and recent order trends before changing anything. Which product is most important to your business right now?",
+      followUpQuestion: "Which action can you take first?"
+    };
+  }
+
+  if (/\b(why|reason|sales dropped|sales down|decline|falling)\b/.test(lower)) {
+    return {
+      intent: "diagnose" as const,
+      reply: `I can see the decline in your numbers. ${analysis.driverSummary} I also see ${topSignals.join(" and ") || "some areas worth reviewing"}. I want to check the biggest operational risk first: are the products getting the most visits currently in stock and ready to ship?`,
+      followUpQuestion: "Are your highest-traffic products in stock and ready to ship?"
+    };
+  }
+
+  if (/\b(stock|inventory|out of stock|unavailable)\b/.test(lower)) {
+    const product = analysis.unavailableProducts[0];
+    return {
+      intent: "clarify" as const,
+      reply: product
+        ? `${product.name} is the first product I would investigate because it has zero stock${product.views ? ` and ${product.views.toLocaleString("en-IN")} recorded views` : ""}. Do you have replenishment available, and when can you make the stock available?`
+        : "Thanks for clarifying. I do not see a zero-stock SKU in the current snapshot. Is the issue a delayed replenishment, or is the seller-panel inventory different from your physical stock?",
+      followUpQuestion: "When can you replenish the affected product?"
+    };
+  }
+
+  if (/\b(cancel|cancellation|dispatch|shipment)\b/.test(lower)) {
+    return {
+      intent: "clarify" as const,
+      reply: "Let's isolate the cancellation driver before we increase demand. Are most cancellations happening because stock is unavailable, orders are not dispatched on time, or buyers are cancelling for another reason?",
+      followUpQuestion: "What is the most common cancellation reason?"
+    };
+  }
+
+  if (/\b(return|rating|review|quality)\b/.test(lower)) {
+    return {
+      intent: "clarify" as const,
+      reply: "Customer experience can affect both retained sales and future conversion. What are buyers mentioning most often: product quality, inaccurate descriptions, damaged packaging, or late delivery?",
+      followUpQuestion: "What is the most frequent buyer complaint?"
+    };
+  }
+
+  if (/\b(done|completed|finished)\b/.test(lower) && /commit|action|restock|inventory|listing/i.test(latestAssistant)) {
+    return {
+      intent: "general" as const,
+      reply: "Good progress. Let's verify the result rather than assume the issue is fixed. Check the seller panel for updated stock and the next day's orders, then share what changed. What result are you seeing now?",
+      followUpQuestion: "What changed after you completed the action?"
+    };
+  }
+
+  return {
+    intent: "clarify" as const,
+    reply: "Let's narrow this down so I can give you the right next step. Are fewer shoppers visiting your products, or are shoppers visiting but not placing orders?",
+    followUpQuestion: "Is the bigger issue traffic or conversion?"
+  };
+}
+
+export async function runVirtualKam({ seller, messages, userMessage }: {
+  seller: any;
+  messages: Array<{ role: string; content: string }>;
+  userMessage: string;
+}): Promise<AgentResult> {
+  const analysis = analyzeSeller(seller);
+  const explicitCommitment = extractSellerCommitment(userMessage);
+
+  if (!process.env.GEMINI_API_KEY) {
+    const response = fallbackReply(userMessage, analysis, messages);
+    return {
+      ...response,
+      ...(explicitCommitment ? { intent: "commitment" as const, commitment: { ...explicitCommitment, confirmed: true }, reply: `I have recorded your commitment: ${explicitCommitment.action}, due ${new Date(explicitCommitment.dueDate).toLocaleDateString("en-IN")}. I will keep it visible in your follow-up list. What could prevent this from being completed on time?` } : {}),
+      analysis,
+      provider: "deterministic-fallback"
+    };
+  }
+
+  try {
+    const model = new ChatGoogleGenerativeAI({
+      apiKey: process.env.GEMINI_API_KEY,
+      model: process.env.GEMINI_MODEL || "gemini-2.5-flash",
+      temperature: 0.2,
+      maxOutputTokens: 450
+    }).withStructuredOutput(responseSchema);
+    const prompt = ChatPromptTemplate.fromMessages([
+      ["system", systemPrompt],
+      ["system", "Seller profile and computed diagnosis: {context}"],
+      new MessagesPlaceholder("history"),
+      ["human", "{input}"]
+    ]);
+    const history = messages.slice(-10).map(message =>
+      message.role === "assistant" ? new AIMessage(message.content) : new HumanMessage(message.content)
+    );
+    const result = await prompt.pipe(model).invoke({
+      context: JSON.stringify({
+        seller: seller.name,
+        category: seller.category,
+        previous: analysis.previous,
+        current: analysis.current,
+        driverSummary: analysis.driverSummary,
+        signals: analysis.signals,
+        actions: analysis.actions,
+        unavailableProducts: analysis.unavailableProducts
+      }),
+      history,
+      input: userMessage
+    });
+
+    const unsupportedCommitmentClaim = /recorded your commitment|commitment has been recorded|saved your commitment/i.test(result.reply);
+    const unsupportedExecutionClaim = /\b(i have|i've|we have|we've)\s+(updated|changed|restocked|paused|launched|modified|reduced|increased)\b/i.test(result.reply);
+    const safeResult = explicitCommitment
+      ? {
+          ...result,
+          intent: "commitment" as const,
+          commitment: { ...explicitCommitment, confirmed: true },
+          reply: `I have recorded your commitment: ${explicitCommitment.action}, due ${new Date(explicitCommitment.dueDate).toLocaleDateString("en-IN")}. I will keep it visible in your follow-up list. What could prevent this from being completed on time?`
+        }
+      : result.intent === "commitment" || unsupportedCommitmentClaim
+        ? {
+            ...result,
+            intent: "clarify" as const,
+            reply: "I can help track that. What specific action will you take, and by what date can you complete it?"
+          }
+        : unsupportedExecutionClaim
+          ? {
+              ...result,
+              intent: "clarify" as const,
+              reply: "I can guide you through that change, but I cannot update your seller account from this demo. Please make the change in your seller panel, then tell me when it is done so we can verify the result."
+            }
+          : result;
+
+    return {
+      ...safeResult,
+      analysis,
+      provider: "langchain-gemini"
+    };
+  } catch {
+    const response = fallbackReply(userMessage, analysis, messages);
+    return {
+      ...response,
+      ...(explicitCommitment ? { intent: "commitment" as const, commitment: { ...explicitCommitment, confirmed: true }, reply: `I have recorded your commitment: ${explicitCommitment.action}, due ${new Date(explicitCommitment.dueDate).toLocaleDateString("en-IN")}. I will keep it visible in your follow-up list.` } : {}),
+      analysis,
+      provider: "deterministic-fallback",
+      warning: "The language model was unavailable; deterministic seller-support logic was used."
+    };
+  }
+}
