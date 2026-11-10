@@ -1,4 +1,4 @@
-import mongoose from "mongoose";
+﻿import mongoose from "mongoose";
 
 const productSchema = new mongoose.Schema({
   name: { type: String, required: true },
@@ -48,6 +48,19 @@ const commitmentSchema = new mongoose.Schema({
   confirmedBySeller: { type: Boolean, default: false }
 }, { timestamps: true });
 
-export const SellerModel = mongoose.models.Seller || mongoose.model("Seller", sellerSchema);
-export const ConversationModel = mongoose.models.Conversation || mongoose.model("Conversation", conversationSchema);
-export const CommitmentModel = mongoose.models.Commitment || mongoose.model("Commitment", commitmentSchema);
+// Explicit types prevent incompatible overloads between cached and new Mongoose models.
+type Seller = mongoose.InferSchemaType<typeof sellerSchema>;
+type Conversation = mongoose.InferSchemaType<typeof conversationSchema>;
+type Commitment = mongoose.InferSchemaType<typeof commitmentSchema>;
+
+export const SellerModel: mongoose.Model<Seller> =
+  (mongoose.models.Seller as mongoose.Model<Seller> | undefined) ??
+  mongoose.model<Seller>("Seller", sellerSchema);
+
+export const ConversationModel: mongoose.Model<Conversation> =
+  (mongoose.models.Conversation as mongoose.Model<Conversation> | undefined) ??
+  mongoose.model<Conversation>("Conversation", conversationSchema);
+
+export const CommitmentModel: mongoose.Model<Commitment> =
+  (mongoose.models.Commitment as mongoose.Model<Commitment> | undefined) ??
+  mongoose.model<Commitment>("Commitment", commitmentSchema);
